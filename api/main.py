@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 import joblib
 import pandas as pd
@@ -59,20 +60,35 @@ def score(payload: dict) -> dict:
 
     df = df[feature_columns]
 
+    if not hasattr(model, "predict"):
+        raise HTTPException(status_code=500, detail="Loaded model does not support predict.")
     if not hasattr(model, "predict_proba"):
         raise HTTPException(status_code=500, detail="Loaded model does not support predict_proba.")
 
+    pred_labels = model.predict(df)
     scores = model.predict_proba(df)[:, 1]
 
     scored = pd.DataFrame(rows).copy()
     scored["fraud_risk"] = scores
+    # Binary is_fraud: class 1 = fraud (matches sklearn .predict on trained pipeline)
+    scored["predicted_fraud"] = (pred_labels == 1)
     scored = scored.sort_values("fraud_risk", ascending=False)
 
     top_n = int(payload.get("top_n", 50))
     top_n = max(1, min(top_n, len(scored)))
 
+    # Native bool/float for JSON (numpy/pandas types are not always JSON-serializable)
+    results: list[dict[str, Any]] = []
+    for rec in scored.head(top_n).to_dict(orient="records"):
+        out = dict(rec)
+        if "predicted_fraud" in out:
+            out["predicted_fraud"] = bool(out["predicted_fraud"])
+        if "fraud_risk" in out:
+            out["fraud_risk"] = float(out["fraud_risk"])
+        results.append(out)
+
     return {
         "count": len(scored),
         "top_n": top_n,
-        "results": scored.head(top_n).to_dict(orient="records"),
+        "results": results,
     }
